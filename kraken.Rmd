@@ -1,0 +1,527 @@
+---
+title: "Semi-generic analysis of Kraken results from Sunbeam"
+author: Lev Litichevskiy
+date: October 12, 2021
+output: pdf_document
+---
+
+Required input:
+
+* Kraken2 output from Sunbeam (`example_kraken_all_samples.tsv`)
+* Sample metadata (could also construct it from the sample names in the Kraken dataset)
+
+Analyses we will perform:
+
+* Alpha diversity
+* Barplots of microbial composition
+* Beta diversity AKA PCoA
+* DESeq2 to identify differential taxa
+
+**Search the document for "CHANGEME" to see which lines of code will require project-specific tweaks.**
+
+# Load libraries
+
+```{r, message=F, warning=F}
+library(tidyverse)
+library(phyloseq)
+library(DESeq2)
+
+# speedyseq is just to speed up tax_glom
+# remotes::install_github("mikemc/speedyseq")
+library(speedyseq)
+
+theme_set(theme_bw(base_size=15))
+```
+
+# Import data
+
+```{r}
+# CHANGEME: change filepath to your input data
+# N.B. You might need to delete the "#" on the second line (right before "OTU ID")
+# in your input file. Do this in any text editor, like vi.
+kraken.df <- read.table("example_kraken_all_samples.tsv",
+                        sep="\t", quote="", header=T)
+
+# remove "-taxa" suffix
+colnames(kraken.df) <- str_replace(colnames(kraken.df), ".taxa$", "")
+
+# subset to just data columns
+kraken.data.df <- kraken.df %>%
+  column_to_rownames("OTU.ID") %>% 
+  dplyr::select(-Consensus.Lineage)
+
+dim(kraken.data.df)
+head(kraken.data.df)
+```
+
+* 6565 taxa, 16 samples
+* Make sure these numbers (especially the number of samples) make sense
+
+# Import sample metadata
+
+```{r}
+# CHANGEME: you can either create sample metadata from the sample names
+# or import the metadata from a different file
+meta.df <- data.frame(
+  sample.ID=colnames(kraken.data.df))
+
+# CHANGEME: create new columns based on sample name
+meta.df <- meta.df %>%
+  tidyr::separate(sample.ID, c("diet.mouseID", "age.weeks"), sep="_", remove=F) %>%
+  tidyr::separate(diet.mouseID, c("diet", "mouseID"), sep="\\.") %>%
+  column_to_rownames("sample.ID")
+
+# CHANGEME: convert certain columns to factors in order to specify their order in plots
+meta.df <- meta.df %>%
+  mutate(diet.fctr=factor(diet, levels=c("AL", "CR40")))
+```
+
+# Convert `Consensus Lineage` column into a taxonomy df
+
+```{r}
+kraken.tax.df <- data.frame(str_split_fixed(kraken.df$Consensus.Lineage, "__|; ", n=14)[, seq(2,14,2)])
+colnames(kraken.tax.df) <- c("kingdom", "phylum", "class", "order", "family", "genus", "species")
+rownames(kraken.tax.df) <- kraken.df$OTU.ID
+```
+
+# Create phyloseq object
+
+```{r}
+physeq <- phyloseq(
+  kraken.data.df %>% as.matrix %>% otu_table(taxa_are_rows=T),
+  meta.df %>% sample_data,
+  kraken.tax.df %>% as.matrix %>% tax_table)
+```
+
+# Subset to bacteria
+
+```{r}
+physeq.bac <- physeq %>% subset_taxa(kingdom=="Bacteria")
+```
+
+* 6242 bacterial taxa
+
+## Percent of reads assigned to each taxonomy level
+
+```{r}
+physeq.bac.tax.df.w.tax.sum <- data.frame(taxa.sum=taxa_sums(physeq.bac)) %>%
+  merge(data.frame(tax_table(physeq.bac)), by="row.names")
+
+1 - sum(physeq.bac.tax.df.w.tax.sum$taxa.sum[physeq.bac.tax.df.w.tax.sum$family == ""]) / sum(physeq.bac.tax.df.w.tax.sum$taxa.sum)
+1 - sum(physeq.bac.tax.df.w.tax.sum$taxa.sum[physeq.bac.tax.df.w.tax.sum$genus == ""]) / sum(physeq.bac.tax.df.w.tax.sum$taxa.sum)
+1 - sum(physeq.bac.tax.df.w.tax.sum$taxa.sum[physeq.bac.tax.df.w.tax.sum$species == ""]) / sum(physeq.bac.tax.df.w.tax.sum$taxa.sum)
+```
+
+* These numbers describe what percent of reads could be mapped to a particular taxonomy level
+* For example, 92.7% of reads could be mapped at least to the genus level
+
+# Aggregate to different taxonomy levels (slow)
+
+```{r}
+physeq.bac.phylum <- physeq.bac %>% tax_glom(taxrank="phylum")
+physeq.bac.class <- physeq.bac %>% tax_glom(taxrank="class")
+physeq.bac.family <- physeq.bac %>% tax_glom(taxrank="family")
+physeq.bac.genus <- physeq.bac %>% tax_glom(taxrank="genus")
+physeq.bac.species <- physeq.bac %>% tax_glom(taxrank="species")
+```
+
+* Aggregation to the species level is slowest
+
+```{r}
+ntaxa(physeq.bac.phylum)
+ntaxa(physeq.bac.class)
+ntaxa(physeq.bac.family)
+ntaxa(physeq.bac.genus)
+ntaxa(physeq.bac.species)
+```
+
+* This tells you how many unique bacterial phyla, families, genera, etc. were detected
+
+## Add genus_and_species annotation to physeq.bac.species for plotting purposes
+
+```{r}
+tax_table(physeq.bac.species) <- data.frame(tax_table(physeq.bac.species)) %>%
+  mutate(genus_and_species=str_c(genus, species, sep=" ")) %>%
+  as.matrix %>% tax_table
+```
+
+# Optional: Filtration
+
+## Samples
+
+It may be helpful to discard samples with very few reads and taxons that were observed very infrequently. The defaults provided here are to include samples with at least 10k counts, and taxons with at least 0.01% relative abundance in 20% of samples.
+
+*Here, I perform filtering for just the genus phyloseq object, but could do the same thing for the phyloseq objects at other taxonomy levels.*
+
+```{r}
+# CHANGEME: update filtering parameters as desired
+MIN.COUNTS.PER.SAMPLE <- 1e5
+
+data.frame(sample_sums(physeq.bac)) %>%
+  setNames("sample.sum") %>%
+  rownames_to_column("sample.ID") %>%
+  ggplot(aes(x=sample.sum, y=sample.ID)) +
+  geom_bar(stat="identity") +
+  geom_vline(xintercept=MIN.COUNTS.PER.SAMPLE, lty=2) +
+  labs(x="Total counts per sample", y="")
+```
+
+```{r}
+samples.to.keep.bool <- sample_sums(physeq.bac) > MIN.COUNTS.PER.SAMPLE
+
+# CHANGEME: apply filtering for all phyloseq objects that you want
+physeq.bac.genus.filt <- physeq.bac.genus %>%
+  subset_samples(samples.to.keep.bool)
+physeq.bac.species.filt <- physeq.bac.species %>%
+  subset_samples(samples.to.keep.bool)
+```
+
+## Taxa
+
+Can filter the phyloseq objects at other taxonomy levels too.
+
+### Genus
+
+```{r}
+# CHANGEME: update filtering parameters as desired
+MIN.REL.ABUND <- 1e-4
+MIN.PERC.SAMPLES.W.TAXON.AT.REL.ABUND <- 0.2
+
+bac.genus.rel.abund.mat <- physeq.bac.genus %>%
+  transform_sample_counts(function(OTU) OTU/sum(OTU)) %>%
+  otu_table %>% as.matrix
+data.frame(
+  frac.taxon.w.sufficient.rel.abund=rowSums(bac.genus.rel.abund.mat > MIN.REL.ABUND) / ncol(bac.genus.rel.abund.mat)) %>%
+  ggplot(aes(frac.taxon.w.sufficient.rel.abund)) +
+  geom_histogram(bins=100) +
+  geom_vline(xintercept=MIN.PERC.SAMPLES.W.TAXON.AT.REL.ABUND, lty=2) +
+  labs(y="# taxons", x=sprintf("Fraction of samples in which a taxon had relative abundance > %.3f%%", MIN.REL.ABUND*100))
+```
+
+```{r}
+genera.to.keep.bool <- rowSums(bac.genus.rel.abund.mat > MIN.REL.ABUND) / ncol(bac.genus.rel.abund.mat) > MIN.PERC.SAMPLES.W.TAXON.AT.REL.ABUND
+physeq.bac.genus.filt <- physeq.bac.genus.filt %>%
+  subset_taxa(genera.to.keep.bool)
+```
+
+### Species
+
+```{r}
+# CHANGEME: update filtering parameters as desired
+MIN.REL.ABUND <- 1e-4
+MIN.PERC.SAMPLES.W.TAXON.AT.REL.ABUND <- 0.2
+
+bac.species.rel.abund.mat <- physeq.bac.species %>%
+  transform_sample_counts(function(OTU) OTU/sum(OTU)) %>%
+  otu_table %>% as.matrix
+data.frame(
+  frac.taxon.w.sufficient.rel.abund=rowSums(bac.species.rel.abund.mat > MIN.REL.ABUND) / ncol(bac.species.rel.abund.mat)) %>%
+  ggplot(aes(frac.taxon.w.sufficient.rel.abund)) +
+  geom_histogram(bins=100) +
+  geom_vline(xintercept=MIN.PERC.SAMPLES.W.TAXON.AT.REL.ABUND, lty=2) +
+  labs(y="# taxons", x=sprintf("Fraction of samples in which a taxon had relative abundance > %.3f%%", MIN.REL.ABUND*100))
+```
+
+```{r}
+species.to.keep.bool <- rowSums(bac.species.rel.abund.mat > MIN.REL.ABUND) / ncol(bac.species.rel.abund.mat) > MIN.PERC.SAMPLES.W.TAXON.AT.REL.ABUND
+physeq.bac.species.filt <- physeq.bac.species.filt %>%
+  subset_taxa(species.to.keep.bool)
+```
+
+## Summary of filtration
+
+```{r}
+physeq.bac.genus
+physeq.bac.genus.filt
+
+physeq.bac.species
+physeq.bac.species.filt
+
+# If you choose not to perform filtering, run the following lines:
+# physeq.bac.genus.filt <- physeq.bac.genus
+# physeq.bac.species.filt <- physeq.bac.species
+```
+
+* 16 samples -> 15 samples
+* 1463 genera -> 213 genera
+* 5487 species -> 197 species
+
+# Alpha diversity
+
+## Genus
+
+```{r}
+alpha.div.genus.df <- estimate_richness(
+  physeq.bac.genus.filt, measures=c("Observed", "Chao1", "Shannon", "Simpson"))
+```
+
+```{r}
+alpha.div.genus.df %>% 
+  merge(meta.df, by="row.names") %>%
+  pivot_longer(c(Observed, Chao1, Shannon, Simpson), names_to="diversity") %>%
+  
+  # CHANGEME to show desired comparisons
+  ggplot(aes(x=diet, y=value)) +
+  geom_boxplot(outlier.shape=NA) +
+  geom_jitter(width=0.1, alpha=0.3) +
+  facet_wrap(~diversity, ncol=4, scales="free_y")
+```
+
+### After rarefaction
+
+Alpha diversity is sensitive to sequencing depth, so I recommend performing rarefaction prior to running alpha diversity analysis so that the results aren't confounded by sequencing depth.
+
+```{r}
+alpha.div.genus.rarefied.df <- physeq.bac.genus.filt %>% 
+  rarefy_even_depth(rngseed=101, replace=F, verbose=F) %>%
+  estimate_richness(measures=c("Observed", "Chao1", "Shannon", "Simpson"))
+```
+
+```{r}
+alpha.div.genus.rarefied.df %>% 
+  merge(meta.df, by="row.names") %>%
+  pivot_longer(c(Observed, Chao1, Shannon, Simpson), names_to="diversity") %>%
+  
+  # CHANGEME to show desired comparisons
+  ggplot(aes(x=diet, y=value)) +
+  geom_boxplot(outlier.shape=NA) +
+  geom_jitter(width=0.1, alpha=0.3) +
+  facet_wrap(~diversity, ncol=4, scales="free_y") +
+  labs(title="After rarefying")
+```
+
+## Species
+
+```{r}
+alpha.div.species.df <- estimate_richness(
+  physeq.bac.species.filt, measures=c("Observed", "Chao1", "Shannon", "Simpson"))
+```
+
+```{r}
+alpha.div.species.df %>% 
+  merge(meta.df, by="row.names") %>%
+  pivot_longer(c(Observed, Chao1, Shannon, Simpson), names_to="diversity") %>%
+  
+  # CHANGEME to show desired comparisons
+  ggplot(aes(x=diet, y=value)) +
+  geom_boxplot(outlier.shape=NA) +
+  geom_jitter(width=0.1, alpha=0.3) +
+  facet_wrap(~diversity, ncol=4, scales="free_y")
+```
+
+### After rarefaction
+
+```{r}
+alpha.div.species.rarefied.df <- physeq.bac.species.filt %>% 
+  rarefy_even_depth(rngseed=101, replace=F, verbose=F) %>%
+  estimate_richness(measures=c("Observed", "Chao1", "Shannon", "Simpson"))
+```
+
+```{r}
+alpha.div.species.rarefied.df %>% 
+  merge(meta.df, by="row.names") %>%
+  pivot_longer(c(Observed, Chao1, Shannon, Simpson), names_to="diversity") %>%
+  
+  # CHANGEME to show desired comparisons
+  ggplot(aes(x=diet, y=value)) +
+  geom_boxplot(outlier.shape=NA) +
+  geom_jitter(width=0.1, alpha=0.3) +
+  facet_wrap(~diversity, ncol=4, scales="free_y") +
+  labs(title="After rarefying")
+```
+
+# Barplots
+
+## Phylum
+
+```{r}
+top.n.phyla <- data.frame(tax_table(physeq.bac.phylum))[
+  names(sort(taxa_sums(physeq.bac.phylum), decreasing=T))[1:9], "phylum"]
+
+physeq.bac.phylum %>% 
+  
+  # compute relative abundance
+  transform_sample_counts(function(OTU) OTU/sum(OTU)) %>%
+  
+  # convert to df
+  psmelt %>%
+  
+  # aggregate less common taxa into "Other"
+  mutate(agg.phylum=fct_relevel(
+    ifelse(phylum %in% top.n.phyla, phylum, "Other"), "Other", after=Inf)) %>%
+  
+  # CHANGEME to show desired comparisons
+  ggplot(aes(x=Sample, y=Abundance, fill=agg.phylum)) +
+  geom_bar(stat="identity") +
+  labs(y="Relative abundance", fill="Phylum")
+```
+
+## Genus
+
+```{r}
+top.n.genera <- data.frame(tax_table(physeq.bac.genus.filt))[
+  names(sort(taxa_sums(physeq.bac.genus.filt), decreasing=T))[1:9], "genus"]
+
+physeq.bac.genus.filt %>% 
+  
+  # compute relative abundance
+  transform_sample_counts(function(OTU) OTU/sum(OTU)) %>%
+  
+  # convert to df
+  psmelt %>%
+  
+  # aggregate less common taxa into "Other"
+  mutate(agg.genus=fct_relevel(
+    ifelse(genus %in% top.n.genera, genus, "Other"), "Other", after=Inf)) %>%
+  
+  # CHANGEME to show desired comparisons
+  ggplot(aes(x=Sample, y=Abundance, fill=agg.genus)) +
+  geom_bar(stat="identity") +
+  labs(y="Relative abundance", fill="Genus")
+```
+
+## Species
+
+Use `genus_and_species` annotation to improve the labels on the plot.
+
+```{r}
+top.n.species <- data.frame(tax_table(physeq.bac.species.filt))[
+  names(sort(taxa_sums(physeq.bac.species.filt), decreasing=T))[1:9], "genus_and_species"]
+
+physeq.bac.species.filt %>% 
+  
+  # compute relative abundance
+  transform_sample_counts(function(OTU) OTU/sum(OTU)) %>%
+  
+  # convert to df
+  psmelt %>%
+  
+  # aggregate less common taxa into "Other"
+  mutate(agg.species=fct_relevel(
+    ifelse(genus_and_species %in% top.n.species, genus_and_species, "Other"), "Other", after=Inf)) %>%
+  
+  # CHANGEME to show desired comparisons
+  ggplot(aes(x=Sample, y=Abundance, fill=agg.species)) +
+  geom_bar(stat="identity") +
+  labs(y="Relative abundance", fill="Species")
+```
+
+# PCoA
+
+## Genus
+
+```{r}
+pcoa.bac.genus <- physeq.bac.genus.filt %>% 
+  
+  # compute relative abundance
+  transform_sample_counts(function(OTU) OTU/sum(OTU)) %>%
+  
+  # perform PCoA using Bray-Curtis distance
+  ordinate(method="MDS", distance="bray")
+
+# create coordinates
+pcoa.bac.genus.df <- plot_ordination(physeq.bac.genus.filt, pcoa.bac.genus, 
+                                     type="samples", justDF=T)
+```
+
+```{r}
+# CHANGEME to show desired comparisons
+pcoa.bac.genus.df %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=diet)) +
+  geom_point(size=3)
+```
+
+## Species
+
+```{r}
+pcoa.bac.species <- physeq.bac.species.filt %>% 
+  
+  # compute relative abundance
+  transform_sample_counts(function(OTU) OTU/sum(OTU)) %>%
+  
+  # perform PCoA using Bray-Curtis distance
+  ordinate(method="MDS", distance="bray")
+
+# create coordinates
+pcoa.bac.species.df <- plot_ordination(physeq.bac.species.filt, pcoa.bac.species, 
+                                     type="samples", justDF=T)
+```
+
+```{r}
+# CHANGEME to show desired comparisons
+pcoa.bac.species.df %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=diet)) +
+  geom_point(size=3)
+```
+
+# DESeq2 to find differential taxons
+
+## Genus
+
+```{r}
+deseq.genus <- physeq.bac.genus.filt %>%
+  
+  # CHANGEME: update the design formula to perform desired comparisons
+  phyloseq_to_deseq2(~diet)
+
+deseq.genus <- DESeq(deseq.genus)
+```
+
+```{r}
+results(deseq.genus) %>% as.data.frame %>%
+  ggplot(aes(pvalue)) +
+  geom_histogram(bins=20)
+```
+
+* The shape of this histogram tells you whether to expect any significant results
+
+```{r}
+results(deseq.genus) %>% as.data.frame %>%
+  dplyr::filter(padj < 0.1)
+```
+
+* 7 results with adjusted p-value < 0.1
+* The adjusted p-value threshold is somewhat arbitrary
+
+```{r}
+results(deseq.genus) %>% as.data.frame %>%
+  ggplot(aes(x=log2FoldChange, y=-log10(padj))) +
+  geom_point() +
+  labs(title="Volcano plot, genera")
+```
+
+## Species
+
+```{r}
+deseq.species <- physeq.bac.species.filt %>%
+  
+  # CHANGEME: update the design formula to perform desired comparisons
+  phyloseq_to_deseq2(~diet)
+
+deseq.species <- DESeq(deseq.species)
+```
+
+```{r}
+results(deseq.species) %>% as.data.frame %>%
+  ggplot(aes(pvalue)) +
+  geom_histogram(bins=20)
+```
+
+```{r}
+results(deseq.species) %>% as.data.frame %>%
+  dplyr::filter(padj < 0.1)
+```
+
+```{r}
+results(deseq.species) %>% as.data.frame %>%
+  ggplot(aes(x=log2FoldChange, y=-log10(padj))) +
+  geom_point() +
+  labs(title="Volcano plot, species")
+```
+
+# Save for reproducibility
+
+```{r}
+Sys.Date()
+sessionInfo()
+```
