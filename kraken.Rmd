@@ -115,7 +115,7 @@ physeq.bac.tax.df.w.tax.sum <- data.frame(taxa.sum=taxa_sums(physeq.bac)) %>%
 * These numbers describe what percent of reads could be mapped to a particular taxonomy level
 * For example, 92.7% of reads could be mapped at least to the genus level
 
-# Aggregate to different taxonomy levels (slow)
+# Aggregate to different taxonomy levels
 
 ```{r}
 physeq.bac.phylum <- physeq.bac %>% tax_glom(taxrank="phylum")
@@ -124,8 +124,6 @@ physeq.bac.family <- physeq.bac %>% tax_glom(taxrank="family")
 physeq.bac.genus <- physeq.bac %>% tax_glom(taxrank="genus")
 physeq.bac.species <- physeq.bac %>% tax_glom(taxrank="species")
 ```
-
-* Aggregation to the species level is slowest
 
 ```{r}
 ntaxa(physeq.bac.phylum)
