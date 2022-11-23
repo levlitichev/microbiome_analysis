@@ -1,0 +1,272 @@
+---
+title: "Analyze bulk RNAseq data"
+author: "Lev Litichevskiy"
+date: "November 23, 2022"
+output: pdf_document
+urlcolor: blue
+---
+
+Necessary input files:
+
+* Counts matrix: This file should have genes in the rows and samples in the columns. Each value is the number of times that gene X was detected in sample Y.
+* Metadata: This file should have important experimental metadata, with each row corresponding to a sample and the columns corresponding to relevant experimental variables.
+
+
+I am using a demo dataset with 200 genes and 14 samples. The samples are bulk RNAseq of colonic tissue from mice treated with the antibiotics neomycin (n=5) or vancomycin (n=5) and control mice that were not treated with antibiotics (n=4).
+
+**Search the document for "CHANGEME" to see which lines of code you will need to change for your specific project.** This is not comprehensive -- other lines may require changing!
+
+A very nice companion to this analysis is the [DESeq2 tutorial](http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html).
+
+# Load packages
+
+You'll probably need to download some of these packages before you can use them.
+
+```{r, warning=F, message=F}
+library(tidyverse)
+library(DESeq2)
+
+# this is just how I like my plots
+theme_set(theme_bw(base_size=12))
+```
+
+# Import metadata
+
+```{r}
+# CHANGEME: to your metadata file
+meta.df <- read.table("demo_rnaseq_metadata.tsv", sep="\t", header=T)
+```
+
+# Import data
+
+```{r}
+# CHANGEME: to your actual data matrix
+counts.df <- read.table("demo_rnaseq_counts_matrix.tsv", sep="\t", header=T) %>% 
+  
+  # move gene_name to be the rownames
+  # CHANGEME: if your gene have a different column name
+  column_to_rownames("gene_name")
+```
+
+# Convert to integer
+
+DESeq2 wants the counts matrix to be integers, so we'll round our data to the nearest integer and convert the data type to be "integer" rather than "double".
+
+```{r}
+# round to the nearest integer
+counts.mat.int <- counts.df %>% 
+  as.matrix() %>% 
+  round()
+
+# convert data type to integer
+mode(counts.mat.int) <- "integer"
+
+# convert matrix back to a df
+counts.df.int <- data.frame(counts.mat.int)
+```
+
+# Verify that columns of the counts matrix match the rows of the metadata
+
+```{r}
+# CHANGEME: this assumes that the metadata column corresponding to sample IDs is
+# called `sample.ID`; change this to whatever column in your metadata matches
+# the columns of your counts matrix
+if (all(colnames(counts.df.int) == meta.df$sample.ID)) {
+  
+  cat("All good.\n")
+
+} else {
+  
+  cat("The columns of your counts matrix don't match your metadata.\n")
+  cat("First 3 samples in counts matrix:", colnames(counts.df.int)[1:3], "\n")
+  cat("First 3 samples in metadata:", meta.df$sample.ID[1:3], "\n")
+
+}
+```
+
+# Create DESeq2 object
+
+The `design` argument in the following code chunk is very important. This is where you tell DESeq2 about the design of your experiment. See the DESeq2 tutorial for more information.
+
+```{r}
+dds <- DESeqDataSetFromMatrix(
+  countData=counts.df.int, 
+  colData=meta.df,
+  
+  # CHANGEME: this is where you tell DESeq2 about your experiment
+  # each of the words after the ~ should correspond to columns in meta.df
+  # e.g. ~ sex + age + timepoint
+  design= ~ abx)
+```
+
+Don't worry if you see "Warning: some variables in design formula are characters, converting to factors".
+
+# Filtration
+
+We want to exclude samples with very few total counts and genes that were detected very rarely. These thresholds depend a lot on your specific experiment. As a rough rule of thumb, I like samples to have at least 5M total counts, and I might discard genes that receive fewer than 100 counts across all samples. The gene filtering isn't super important because other downstream analyses also filter out low-abundance genes.
+
+## Remove samples with very low sequencing depth
+
+```{r}
+# CHANGEME if you want to change this filtering threshold
+SAMPLE.SUM.THRESHOLD <- 10000 #5000000
+
+data.frame(sample.sum=colSums(counts(dds))) %>% 
+  rownames_to_column("sample.ID") %>% 
+  ggplot(aes(y=sample.ID, x=sample.sum)) +
+  geom_col() +
+  geom_vline(xintercept=SAMPLE.SUM.THRESHOLD, lty=2) +
+  labs(title=sprintf("n=%i samples", ncol(dds)))
+```
+
+* We have many fewer than 5M counts per sample because we're using a small demo dataset
+* Here, I set a threshold of 10k counts per sample
+
+## Remove genes with very low expression
+
+```{r}
+# CHANGEME if you want to change this filtering threshold
+GENE.SUM.THRESHOLD <- 100
+
+data.frame(row.sum=rowSums(counts(dds))) %>% 
+  ggplot(aes(log10(row.sum))) +
+  geom_histogram() +
+  geom_vline(xintercept=log10(GENE.SUM.THRESHOLD), lty=2) +
+  labs(title=sprintf("n=%i genes", nrow(dds)))
+```
+
+## Do filtering
+
+```{r}
+samples.to.keep <- colnames(counts(dds))[colSums(counts(dds)) > SAMPLE.SUM.THRESHOLD]
+genes.to.keep <- rownames(counts(dds))[rowSums(counts(dds)) > GENE.SUM.THRESHOLD]
+dds.filt <- dds[genes.to.keep, samples.to.keep]
+```
+
+```{r}
+dim(dds)
+dim(dds.filt)
+```
+
+* 200 genes -> 142 genes
+* No filtration of samples
+
+# PCA
+
+Okay, now we're on to real analysis. To make a PCA plot, we first apply the variance-stabilizing transformation (VST).
+
+```{r}
+# CHANGEME: because our demo dataset has very few genes, we set nsub to 100, but
+# you should use more genes than this; the default is 1000
+vsd <- vst(dds.filt, blind=FALSE, nsub=100)
+```
+
+```{r}
+# CHANGEME: set intgroup to your experimental variable of interest
+plotPCA(vsd, intgroup="abx")
+```
+
+* You can add any other ggplot `geom` functions to this plot
+* See the ["Principal component plot of the samples" section](https://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#principal-component-plot-of-the-samples) in the DESeq2 tutorial about how to do this.
+
+# Find differentially expressed genes
+
+Differential expression is calculated based on the design formula you provided earlier.
+
+```{r}
+dds.filt <- DESeq(dds.filt)
+```
+
+## See possible comparisons
+
+```{r}
+resultsNames(dds.filt)
+```
+
+* These are the possible options you can provide to the "name" argument of the `results` function below
+
+## Neo v. control
+
+In this case, both antibiotics are compared to control, which is what we want. But often, you end up with comparisons against some group that isn't actually the control or reference group. See [this note](https://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#factorlevels) in the DESeq2 tutorial about how to get around this.
+
+```{r}
+# CHANGEME: "name" should be one of the outputs of resultsNames above
+neo.deseq.df <- results(dds.filt, name="abx_Neo_vs_Control") %>% 
+  
+  # convert to dataframe for convenience
+  as.data.frame()
+```
+
+```{r}
+neo.deseq.df %>% dplyr::filter(padj < 0.01) %>% nrow
+neo.deseq.df %>% dplyr::filter(padj < 0.001) %>% nrow
+neo.deseq.df %>% dplyr::filter(padj < 0.0001) %>% nrow
+```
+
+* We have a very small number of differentially expressed genes (DEGs) because we are using a demo dataset
+  * padj < 0.01: 4 genes
+  * padj < 0.001: 1 gene
+  * padj < 0.0001: 1 gene
+
+### Display top DEGs
+
+```{r}
+neo.deseq.df %>%
+  slice_min(padj, n=10, with_ties=F) %>% 
+  rownames_to_column("gene_name") %>% 
+  dplyr::select(gene_name, log2FoldChange, pvalue, padj) %>% 
+  arrange(padj)
+```
+
+### Look at one gene
+
+```{r}
+# CHANGEME: to your gene of interest and experimental group of interest
+plotCounts(dds.filt, gene="Hoxb6", intgroup="abx")
+```
+
+### Volcano plot
+
+```{r}
+# CHANGEME: change to what adjusted p-value threshold you want
+# 0.01 is a rule of thumb, I'm using 0.1 to demonstrate labeling
+PADJ.THRESHOLD <- 0.1 # 0.01
+
+neo.deseq.df %>%
+  rownames_to_column("gene_name") %>% 
+  
+  # only label DEGs
+  mutate(label=case_when(
+    padj < PADJ.THRESHOLD ~ gene_name,
+    TRUE ~ NA_character_
+  )) %>%
+  
+  ggplot(aes(x=log2FoldChange, y=-log10(padj), label=label)) +
+  geom_point(alpha=0.1) +
+  geom_hline(yintercept=-log10(PADJ.THRESHOLD), lty=2) +
+  geom_text(nudge_x=0.1) +
+  
+  # CHANGEME: improve this label with what your first and second groups actually are
+  labs(x="<< Higher in 2nd group | log2FC | Higher in 1st group >>")
+```
+
+## Vanc v. control
+
+```{r}
+# CHANGEME: "name" should be one of the outputs of resultsNames above
+vanc.deseq.df <- results(dds.filt, name="abx_Van_vs_Control") %>% 
+  
+  # convert to dataframe for convenience
+  as.data.frame()
+```
+
+And then repeat the same steps that we did for neo versus control.
+
+# Pathway enrichment
+
+It's possible to do pathway enrichment in R, but perhaps the quickest and easiest thing is to export your DEGs and provide them to [Enrichr](https://maayanlab.cloud/Enrichr/).
+
+```{r}
+neo.deseq.df %>% dplyr::filter(padj < PADJ.THRESHOLD) %>% 
+  rownames %>% cat
+```
