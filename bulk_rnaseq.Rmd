@@ -158,7 +158,7 @@ Okay, now we're on to real analysis. To make a PCA plot, we first apply the vari
 ```{r}
 # CHANGEME: because our demo dataset has very few genes, we set nsub to 100, but
 # you should use more genes than this; the default is 1000
-vsd <- vst(dds.filt, blind=FALSE, nsub=100)
+vsd <- vst(dds.filt, nsub=100)
 ```
 
 ```{r}
