@@ -16,7 +16,7 @@ I am using a demo dataset with 200 genes and 14 samples. The samples are bulk RN
 
 **Search the document for "CHANGEME" to see which lines of code you will need to change for your specific project.** This is not comprehensive -- other lines may require changing!
 
-A very nice companion to this analysis is the [DESeq2 tutorial](http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html).
+A very nice companion to this analysis is the [DESeq2 tutorial](http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html). This [RNAseq workflow vignette](http://master.bioconductor.org/packages/release/workflows/vignettes/rnaseqGene/inst/doc/rnaseqGene.html) by Michael Love et al. has a lot of overlap with the DESeq2 tutorial but other potentially helpful details.
 
 # Load packages
 
@@ -86,17 +86,13 @@ if (all(colnames(counts.df.int) == meta.df$sample.ID)) {
 
 # Create DESeq2 object
 
-The `design` argument in the following code chunk is very important. This is where you tell DESeq2 about the design of your experiment. See the DESeq2 tutorial for more information.
+For now, we put a placeholder for the `design` argument. Later on, we'll update it based on our actual experimental design.
 
 ```{r}
 dds <- DESeqDataSetFromMatrix(
   countData=counts.df.int, 
   colData=meta.df,
-  
-  # CHANGEME: this is where you tell DESeq2 about your experiment
-  # each of the words after the ~ should correspond to columns in meta.df
-  # e.g. ~ sex + age + timepoint
-  design= ~ abx)
+  design=~1)
 ```
 
 Don't worry if you see "Warning: some variables in design formula are characters, converting to factors".
@@ -153,7 +149,7 @@ dim(dds.filt)
 
 # PCA
 
-Okay, now we're on to real analysis. To make a PCA plot, we first apply the variance-stabilizing transformation (VST).
+Okay, now we're on to real analysis. To make a PCA plot, we first apply the variance-stabilizing transformation (VST). Other transformations, like log2cpm or rlog (available through DESeq2), would also be fine. The two things that VST is adjusting for are 1) library size, and 2) ensuring that highly expressed genes don't dominate over lowly expressed genes. See [this section in the RNAseq workflow vignette](http://master.bioconductor.org/packages/release/workflows/vignettes/rnaseqGene/inst/doc/rnaseqGene.html#the-variance-stabilizing-transformation-and-the-rlog) for more information.
 
 ```{r}
 # CHANGEME: because our demo dataset has very few genes, we set nsub to 100, but
@@ -171,9 +167,16 @@ plotPCA(vsd, intgroup="abx")
 
 # Find differentially expressed genes
 
-Differential expression is calculated based on the design formula you provided earlier.
+In order to find differentially expressed genes (DEGs), we need to tell DESeq2 about our experimental design. We do this by updating the "design" attribute of the `dds.filt` object. We could have also provided `design` as an argument when we created the DESeq2 object above.
+
+**Importantly, you provide the raw counts to DESeq2, not transformed counts, because DESeq2 uses raw counts for its internal modeling.**
 
 ```{r}
+# CHANGEME: this is where you tell DESeq2 about your experiment
+# each of the words after the ~ should correspond to columns in meta.df AKA colData(dds.filt)
+# in our case, we only have antibiotic treatment, but another possible design formula 
+# is something like ~ sex + age + timepoint
+design(dds.filt) <- ~ abx
 dds.filt <- DESeq(dds.filt)
 ```
 
@@ -270,3 +273,44 @@ It's possible to do pathway enrichment in R, but perhaps the quickest and easies
 neo.deseq.df %>% dplyr::filter(padj < PADJ.THRESHOLD) %>% 
   rownames %>% cat
 ```
+
+# Appendix: data normalization
+
+## Raw counts not appropriate for PCA
+
+Because PCA will be sensitive to sequencing depth.
+
+```{r}
+plotPCA(DESeqTransform(dds), intgroup="abx")
+```
+
+* We see that the vancomycin group is split into two groups
+
+```{r}
+plotPCA(DESeqTransform(dds), intgroup="abx", returnData=T) %>% 
+  merge(data.frame(sample.sum=colSums(counts(dds))), by="row.names") %>% 
+  dplyr::filter(abx == "Van") %>% 
+  dplyr::select(sample.sum, PC1, PC2) %>% 
+  arrange(PC1)
+```
+
+* The two samples off to the right have twice the sequencing depth of the other 3 vancomycin samples
+
+## Log transformation helps make the data look more normal
+
+```{r}
+as.numeric(counts(dds)) %>% 
+  hist(breaks=100, xlab="", main="Raw counts")
+```
+
+```{r}
+as.numeric(log2(counts(dds) + 1)) %>% 
+  hist(breaks=100, xlab="", main="log2(count+1)")
+```
+
+```{r}
+as.numeric(assay(vsd)) %>% 
+  hist(breaks=100, xlab="", main="vst")
+```
+
+* We see that vst dealt better with the zeros
