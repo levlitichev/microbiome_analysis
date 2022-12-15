@@ -1,7 +1,7 @@
 ---
 title: "Analyze bulk RNAseq data"
 author: "Lev Litichevskiy"
-date: "November 23, 2022"
+date: "December 15, 2022"
 output: pdf_document
 urlcolor: blue
 ---
@@ -34,14 +34,14 @@ theme_set(theme_bw(base_size=12))
 
 ```{r}
 # CHANGEME: to your metadata file
-meta.df <- read.table("demo_rnaseq_metadata.tsv", sep="\t", header=T)
+meta.df <- read.table("data/demo_rnaseq_metadata.tsv", sep="\t", header=T)
 ```
 
 # Import data
 
 ```{r}
 # CHANGEME: to your actual data matrix
-counts.df <- read.table("demo_rnaseq_counts_matrix.tsv", sep="\t", header=T) %>% 
+counts.df <- read.table("data/demo_rnaseq_counts_matrix.tsv", sep="\t", header=T) %>% 
   
   # move gene_name to be the rownames
   # CHANGEME: if your gene have a different column name
@@ -86,13 +86,18 @@ if (all(colnames(counts.df.int) == meta.df$sample.ID)) {
 
 # Create DESeq2 object
 
-For now, we put a placeholder for the `design` argument. Later on, we'll update it based on our actual experimental design.
+The `design` argument in the following code chunk is very important. This is where you tell DESeq2 about the design of your experiment. See the DESeq2 tutorial for more information.
 
 ```{r}
 dds <- DESeqDataSetFromMatrix(
   countData=counts.df.int, 
   colData=meta.df,
-  design=~1)
+  
+  # CHANGEME: this is where you tell DESeq2 about your experiment
+  # each of the words after the ~ should correspond to columns in meta.df
+  # in the demo dataset, we only have antibiotic status, but an example of 
+  # another design formula is something like ~ sex + age + timepoint
+  design= ~ abx)
 ```
 
 Don't worry if you see "Warning: some variables in design formula are characters, converting to factors".
@@ -167,16 +172,11 @@ plotPCA(vsd, intgroup="abx")
 
 # Find differentially expressed genes
 
-In order to find differentially expressed genes (DEGs), we need to tell DESeq2 about our experimental design. We do this by updating the "design" attribute of the `dds.filt` object. We could have also provided `design` as an argument when we created the DESeq2 object above.
+Differential expression is calculated based on the design formula you provided earlier.
 
 **Importantly, you provide the raw counts to DESeq2, not transformed counts, because DESeq2 uses raw counts for its internal modeling.**
 
 ```{r}
-# CHANGEME: this is where you tell DESeq2 about your experiment
-# each of the words after the ~ should correspond to columns in meta.df AKA colData(dds.filt)
-# in our case, we only have antibiotic treatment, but another possible design formula 
-# is something like ~ sex + age + timepoint
-design(dds.filt) <- ~ abx
 dds.filt <- DESeq(dds.filt)
 ```
 
@@ -314,3 +314,10 @@ as.numeric(assay(vsd)) %>%
 ```
 
 * We see that vst dealt better with the zeros
+
+# Save for reproducibility
+
+```{r}
+Sys.Date()
+sessionInfo()
+```

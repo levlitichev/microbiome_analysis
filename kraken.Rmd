@@ -7,7 +7,7 @@ output: pdf_document
 
 Required input:
 
-* Kraken2 output from Sunbeam (`example_kraken_all_samples.tsv`)
+* Kraken2 output from Sunbeam (`demo_kraken_all_samples.tsv`)
 * Sample metadata (could also construct it from the sample names in the Kraken dataset)
 
 Analyses we will perform:
@@ -38,8 +38,8 @@ theme_set(theme_bw(base_size=15))
 ```{r}
 # CHANGEME: change filepath to your input data
 # N.B. You might need to delete the "#" on the second line (right before "OTU ID")
-# in your input file. Do this in any text editor, like vi.
-kraken.df <- read.table("example_kraken_all_samples.tsv",
+# in your input file. Do this in any text editor, like Notepad
+kraken.df <- read.table("data/demo_kraken_all_samples.tsv",
                         sep="\t", quote="", header=T)
 
 # remove "-taxa" suffix
@@ -351,7 +351,8 @@ physeq.bac.phylum %>%
   # CHANGEME to show desired comparisons
   ggplot(aes(x=Sample, y=Abundance, fill=agg.phylum)) +
   geom_bar(stat="identity") +
-  labs(y="Relative abundance", fill="Phylum")
+  labs(y="Relative abundance", fill="Phylum") +
+  theme(axis.text.x=element_text(angle=90))
 ```
 
 ## Genus
@@ -375,7 +376,8 @@ physeq.bac.genus.filt %>%
   # CHANGEME to show desired comparisons
   ggplot(aes(x=Sample, y=Abundance, fill=agg.genus)) +
   geom_bar(stat="identity") +
-  labs(y="Relative abundance", fill="Genus")
+  labs(y="Relative abundance", fill="Genus") +
+  theme(axis.text.x=element_text(angle=90))
 ```
 
 ## Species
@@ -401,7 +403,8 @@ physeq.bac.species.filt %>%
   # CHANGEME to show desired comparisons
   ggplot(aes(x=Sample, y=Abundance, fill=agg.species)) +
   geom_bar(stat="identity") +
-  labs(y="Relative abundance", fill="Species")
+  labs(y="Relative abundance", fill="Species") +
+  theme(axis.text.x=element_text(angle=90))
 ```
 
 # PCoA
